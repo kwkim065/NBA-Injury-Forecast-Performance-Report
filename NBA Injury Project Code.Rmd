@@ -1,0 +1,708 @@
+---
+title: "NBA Post-Injury Performance Project"
+author: "Kyle Kim"
+output:
+  html_document: 
+    code_folding: hide
+    toc: true
+    toc_float: true
+  pdf_document: default
+---
+
+# Introduction
+
+The objective of this project is to predict whether or not an NBA (National Basketball Association) player is able to perform sufficiently (either equally performing or overperforming) based on Game Score after a certain classified level of an injury. We will be using a custom dataset, formed by the combination of different resources such as Basketball Reference for statistics and a NBA injury log set from Kaggle (links provided in codebook). We will be using the time frame from seasons 2015-2020 to look at different injuries and statistics pre- and post-injury.
+
+To understand more about injuries and their effects on NBA players, it's important to know the history of injuries that have either destroyed careers or have produced a comeback story. When a player is injured, they are unable to play for a period of time which could result in a player being heavily deterred by their injury and have what can be defined as "rust". Players such as Derrick Rose, who suffered a major ACL tear and multiple leg injuries, and Demarcus Cousins, who suffered a Achillies tear, were unable to play at the same level they once were. On the other hand, Kevin Durant and Paul George had gruesome injuries, but were able to perform at a high level post-injury. In general, the narrative in the NBA about injuries is that it has the potential to heavily change a player's career and how fans view these players differently about their health.
+
+
+### Loading Packages
+
+Let's load in our packages and set up our environment to get started:
+```{r setup, echo = TRUE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library(corrplot) # for correlation plot
+library(class)
+library(ranger) # for random forest model
+library(xgboost) # for boosted tree model
+library(kknn) # for knn model
+library(glmnet) # for elastic net model
+
+set.seed(1000) # setting seed
+```
+
+ 
+
+# Model Importance
+
+The NBA is slowly integrating more statistics in evaluating games and player performance. Our model, which will predict a player's performance through game score after their injury, will useful in situations where a player is ready to return to the court and the team's coach is trying to assess the performance of a player if given a set number of minutes. This way, coaches are able to maximize team production in games and help the injured player slowly progress into their previous role before injury. I hope to show the power of NBA statistics and how integral analytics are to basketball, especially at a professional level.
+
+
+# Reading in the Dataset
+
+This project uses a dataset that includes data from different users and websites. The injury logs of players were gathered from a Kaggle set that spanned over NBA seasons from 2010 to 2020. After getting 150 random players from the set, I was able to create a new Excel file, where I was able to add players' age, physical data, single game statistics, and game score averages from Basketball Reference. 
+
+```{r}
+nbaset <- read_csv(file = "newvarnba.csv", 
+                   col_names = c("player", "position", "age", "injury", "inj_level", "time_recovered", "weight", "weight_class", "height", "height_class", "prior_inj_count", "mpg_preinj", "FG_preinj", "FGA_preinj", "FT_preinj", "FTA_preinj", "ORB_preinj", "DRB_preinj", "AST_preinj", "STL_preinj", "BLK_preinj", "TOV_preinj", "PF_preinj", "points_preinj", "gs_preinj", "gs_per36_preinj", "mpg_postinj", "FG_postinj", "FGA_postinj", "FT_postinj", "FTA_postinj", "ORB_postinj", "DRB_postinj", "AST_postinj", "STL_postinj", "BLK_postinj", "TOV_postinj", "PF_postinj", "points_postinj", "gs_postinj", "gs_per36_postinj", "performance"),
+                   col_types = cols(col_character(), col_character(), col_double(), col_character(), col_double(), col_double(), col_double(), col_character(), col_double(), col_character(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_double(), col_character())
+)
+
+```
+
+## Checking the Headers of our Imported Dataset
+```{r}
+nbaset %>%
+  head()
+```
+
+## Dimensions of the Dataset
+```{r}
+dim(nbaset)
+```
+We have 150 observations of players with 42 different variables for set.
+
+
+## Let's take a look at our predictors to give some context and terms of our dataset:
+
+`player` - our "observation" of an individual whom we will be assessing their performance before and after
+
+`position` - the role in an on-court 5 man matchup, specified by PG (point guard), SG (shooting guard), SF (small forward), PF (power forward), C (center), usually decided by a combination of a player's physique compared to other players in similar weight and height classes and their skillset criteria to match the role needed by the team
+
+`age` - age specified on the date they were injured
+
+`injury` - strings that explain what kind of injury the player has suffered, descriptions and keywords used to categorize by severity level
+
+`inj_level` - indicates the severity of the injury (as history has shown) listed in our last column leveled 1, 2, 3, & 4 (1 indicates common, less severe injuries while 4 indicates a detrimental, possibly career-changing injury); 
+
+Here is a list to get an idea of how these injuries are separated: 
+
+-Classification of Injury Levels: 
+
+*Level I (least significantly impactful injury):
+Sore, back spasms, non-knee bruise
+
+*Level II (less significantly impactful injury):
+Ankle sprain, knee bruise, contusion, inflammation, hand/finger fracture
+
+*Level III (impactful injury):
+Lower body Fracture, torn ligaments
+
+*Level IV (highly significantly impactful injury):
+Knee/Leg break, Achilles tear, ACL/MCL tear
+
+
+`time_recovered` - (in days) time taken to recover from injury, found by subtracting the amount of time between the date returned and the date injured
+
+`weight` - in lbs, weight of the player
+
+`weight_class` - a comparison of the player's `weight` to the average weight of their assigned position
+
+  - Weight Classification by Position:
+
+    -PG: 187 - 203 lbs  
+    -SG: 205 - 215 lbs  
+    -SF: 215 - 225 lbs  
+    -PF: 228 - 240 lbs  
+    -C: 240 - 260 lbs  
+
+
+`height` - in cm, height of the player
+
+`height_class` -  a comparison of the player's `height` to the average height of their assigned position
+
+  - Average Height of each Position (this makes sense because of matchups):
+
+    -PG: 6’2”-6’3”  
+    -SG: 6’4”-6’5”  
+    -SF: 6’6”-6’7”  
+    -PF: 6’8”-6’9”  
+    -C: 6’10”-6’11”  
+
+
+`prior_inj_count` - number of injuries the player sustained before the current injury we are observing, a higher count of prior injuries indicates a player has either played a long career at the time or is more injury prone than most players
+
+`mpg_preinj`/`mpg_postinj` - average minutes per game played in a 10 game span each for pre-injury/post-injury
+
+`FG_preinj`/`FG_postinj` - average field goals made in a 10 game span each for pre-injury/post-injury
+
+`FGA_preinj`/`FGA_postinj` - average field goals attempted in a 10 game span each for pre-injury/post-injury
+
+`FT_preinj`/`FT_postinj` - average free throws made in a 10 game span each for pre-injury/post-injury
+
+`FTA_preinj`/`FTA_postinj` - average free throws attempted in a 10 game span each for pre-injury/post-injury
+
+`ORB_preinj`/`ORB_postinj` - average offensive rebounds gathered in a 10 game span each for pre-injury/post-injury
+
+`DRB_preinj`/`DRB_postinj` - average defensive rebounds gathered in a 10 game span each for pre-injury/post-injury
+
+`AST_preinj`/`AST_postinj` - average assists made in a 10 game span each for pre-injury/post-injury
+
+`STL_preinj`/`STL_postinj` - average steals made in a 10 game span each for pre-injury/post-injury
+
+`BLK_preinj`/`BLK_postinj` - average blocks made in a 10 game span each for pre-injury/post-injury
+
+`TOV_preinj`/`TOV_postinj` - average turnovers made in a 10 game span each for pre-injury/post-injury
+
+`PF_preinj`/`PF_postinj` - average personal fouls taken in a 10 game span each for pre-injury/post-injury
+
+`points_preinj`/`points_postinj` - average points made in a 10 game span each for pre-injury/post-injury
+
+`gs_preinj`/`gs_postinj` - average game score (GS) in a 10 game span each for pre-injury/post-injury
+GS or the Hollinger game score is an accumulation of the above stats taken through a formula:
+
+##### Game Score = PTS + 0.4 * FGM - 0.7 * FGA - 0.4 * (FTA - FT) + 0.7 * ORB + 0.3 * DRB + STL + 0.7 * AST + 0.7 * BLK - 0.4 * PF - TOV
+
+`gs_per36_preinj`/`gs_per36_postinj` - average GS in a 10 game span each for pre-injury/post-injury adjusted to 36 minutes to compare performance pre-injury and post-injury; we will be using these to compare in order to get our next variable:
+
+`performance` - assessment of comparing GS pre-injury vs post-injury; if player performs within 1.5 GS points of their game score pre-injury, they have equally performed (with greater being overperformed, with lesser being underperformed)
+
+
+
+## NBA Dataset with differences in GS pre- and post- injury
+To take a look at general game score difference, we need to make some calculations on assessing the difference of post-injury GS and pre-injury GS:
+```{r}
+i <- c(1:150)
+gs_per36_diff <- c(nbaset$gs_per36_postinj[i]-nbaset$gs_per36_preinj[i])  # adding GS diff pre-&post-injury column
+nba <- cbind(nbaset, gs_per36_diff) # our new dataset!
+```
+
+## Boxplot of GS difference pre- and post-injury
+```{r}
+ggplot(nba, aes(gs_per36_diff)) +
+  geom_boxplot(fill = 'light blue')
+```
+
+Our boxplot shows a reflective distribution of the average change in game scores pre- & post-injury. Our outliers on the left reflect the players who were most affected by their respective injuries and had a poor game score (per 36) after their injury in comparison to before they were injured. 
+
+
+## Injury Level Distribution of Players
+Let's take a look at how many players are in each injury level category:
+```{r}
+inj_level_plot <- ggplot(nba, aes(x = inj_level)) +
+  geom_histogram(bins = "4")
+inj_level_plot
+```
+
+This is a good representation of the distribution of injuries circulating in the NBA.
+The reason we see more injuries in injury level 2 than injury level 1 is because many players are able to overcome smaller injuries (ex. soreness) such as the ones in level 1, while level 2 injuries are more impactful towards a player's ability to play. 
+
+
+
+# Morphing our Data with Factors
+We need to set some of our categorical variables as factors, while also including 'ordered = TRUE' for us to order levels of lowest rank to highest rank on our selected variables.
+```{r}
+nba <- nba %>%
+  mutate(
+    inj_level = factor(inj_level, ordered = TRUE),
+    position = factor(position),
+    weight_class = factor(weight_class, ordered = TRUE),
+    height_class = factor(height_class, ordered = TRUE),
+    performance = factor(performance)
+)
+```
+
+
+Here, we will be ordering the levels of our injury severity classification, weight classification (by position), and height classification (by position). This will allow us to use 'step_ordinalscore()' when we are building our recipe.
+```{r, results = FALSE}
+ordered(nba$inj_level, levels = c(1,2,3,4)) # ordering the levels of our injury severity classification
+ordered(nba$weight_class, levels = c("Underweight", "Average Weight", "Overweight"))
+ordered(nba$height_class, levels = c("Underaverage", "Average", "Overaverage"))
+ordered(nba$performance, levels = c("Underperformed","Equal", "Overperformed"))
+```
+
+# Exploratory Data Analysis
+
+Before modeling, we need to understand our data better and some of the relationships between variables. We already fixed our variables that needed to be factors. It's important to note that a player's performance is determined by how close their game score average is to their previous game score average.
+Let's take a look at some more in-depth exploratory data analysis through plots:
+
+## Variable Correlation Plot
+
+We are gathering our Single Variable Average differences for our Variable Correlation Plot. Each single game statistic difference in determined by the statistic post-injury - the statistic pre-injury.
+```{r}
+i <- c(1:150)
+mpg_diff <- c(nbaset$mpg_postinj[i]-nbaset$mpg_preinj[i])
+FG_diff <- c(nbaset$FG_postinj[i]-nbaset$FG_preinj[i])
+FGA_diff <- c(nbaset$FGA_postinj[i]-nbaset$FGA_preinj[i])
+FT_diff <- c(nbaset$FT_postinj[i]-nbaset$FT_preinj[i])
+FTA_diff <- c(nbaset$FTA_postinj[i]-nbaset$FTA_preinj[i])
+ORB_diff <- c(nbaset$ORB_postinj[i]-nbaset$ORB_preinj[i])
+DRB_diff <- c(nbaset$DRB_postinj[i]-nbaset$DRB_preinj[i])
+AST_diff <- c(nbaset$AST_postinj[i]-nbaset$AST_preinj[i])
+STL_diff <- c(nbaset$STL_postinj[i]-nbaset$STL_preinj[i])
+BLK_diff <- c(nbaset$BLK_postinj[i]-nbaset$BLK_preinj[i])
+TOV_diff <- c(nbaset$TOV_postinj[i]-nbaset$TOV_preinj[i])
+PF_diff <- c(nbaset$PF_postinj[i]-nbaset$PF_preinj[i])
+points_diff <- c(nbaset$points_postinj[i]-nbaset$points_preinj[i]) 
+```
+
+Making our Correlation Plot:
+```{r}
+nba2 <- cbind(nbaset, mpg_diff, FG_diff, FGA_diff, FT_diff, FTA_diff, ORB_diff, DRB_diff, AST_diff, STL_diff, BLK_diff, TOV_diff, PF_diff, points_diff)
+nba_numeric <- nba2 %>%
+  select_if(is.numeric) %>%
+  # taking out single game statistics pre- and post-injury now that we have the differences
+  select(-mpg_preinj, -FG_preinj, -FGA_preinj, -FT_preinj, -FTA_preinj, -ORB_preinj, -DRB_preinj, -AST_preinj, -STL_preinj, -BLK_preinj, -TOV_preinj, -PF_preinj, -points_preinj, -gs_preinj, -gs_per36_preinj, -mpg_postinj, -FG_postinj, -FGA_postinj, -FT_postinj, -FTA_postinj, -ORB_postinj, -DRB_postinj, -AST_postinj, -STL_postinj, -BLK_postinj, -TOV_postinj, -PF_postinj, -points_postinj) 
+nba_cor <- cor(nba_numeric)
+nba_cor_plot <- corrplot(nba_cor,
+                         order = "AOE",
+                         type = "lower")
+```
+
+At first glance, we can see that we have a lot of positive correlation among our game score single average difference variables. 
+We can see slight negative correlation when viewing game score single averages and time recovered as well as game score single averages and injury level. This makes sense as our initial belief is that with the longer time taken to recover and the higher the injury level, players have a harder time retaining the same skill level pre-injury.
+Some obvious observations of higher positive correlation are height and weight, time recovered and injury level, and age and prior injury count.
+
+
+
+## Injury Level Grouping by Position
+
+Here, we are taking a look at the volume of different positions at each injury level. In our specific time span (seasons 2015-2020), we see that guards (PG and SG) are our highest populated injured players while centers (C) are our least populated.
+```{r}
+ggplot(nba, aes(inj_level)) +
+  geom_bar(aes(fill=position))
+```
+
+
+## Injury Level and Time Recovered
+```{r}
+ggplot(nba, aes(x = time_recovered, y = inj_level)) +
+  geom_point()
+```
+
+Our plot shows a great distribution of our injuries across time recovery, categorized by injury classification levels one through four. We see a short average recovery time for most of our injuries in injury classification Level 1.
+We see our largest spread of injury points in Levels 2 and 3, which vary in terms of time recovery length. This is because of varying ages and prior injury counts across the players.
+Many younger players would take less time in our groups 2 to 3 than older players would. Less points are present as time recovery passes which indicate the players who unexpectedly took more time to heal.
+Ex. Older players and high prior injury counts result in player's taking more time to heal.
+
+
+
+## Performances Split by Injury Level
+```{r}
+ggplot(nba, aes(inj_level)) +
+  geom_bar(aes(fill = performance)) +
+  scale_fill_manual("Performance", values = c("Equal" = "Light Blue", "Overperformed" = "Purple", "Underperformed" = "Gold"))
+```
+
+## Age & Performance after Injury
+```{r}
+ggplot(nba, aes(age)) +
+  geom_bar(aes(fill = performance)) +
+  facet_wrap(~ inj_level)
+```
+
+As we can see, as we travel farther down age in each level, the volume of underperformed (with the exception some equal performances from players as well, which is expected) players increases. 
+*It's important to note the reason why we see quite the dropoff in number of players after the age of 30, which indicates how short an NBA career really is - most players don't even reach that age due to retirement, sometimes due to injury. 
+In Levels 3 & 4, we see a greater amount of players who have underperformed starting at around the ages of 25 to 26, which is the age in which players hit their prime and play considerably higher minutes than in the earlier stages of their careers.
+
+
+
+
+## Prior Injury Count and Performance
+```{r}
+ggplot(nba, aes(prior_inj_count)) +
+  geom_bar(aes(fill = performance)) +
+  facet_wrap(~ inj_level)
+```
+
+We can see that as we travel higher on the injury level scale, we see less and less equally performing and overperforming players in their respective levels. 
+
+
+## Injury Level and Weight Classification
+```{r}
+ggplot(nba, aes(inj_level)) +
+  geom_bar(aes(fill= weight_class))
+```
+
+
+## Injury Level and Height Classification
+```{r}
+ggplot(nba, aes(inj_level)) +
+  geom_bar(aes(fill= height_class))
+```
+
+First off, we can see that we have a decent spread of at least 10 players across our most common levels (1-3), while Level 4 consists of our lowest populated level as the commonality of a level 4 occuring is low but we still have a decent amount of them across a span of a couple seasons.
+In terms of the weights, over a third of the players in each level have an average weight for their position. However, nearly over half of the players in each level are either overweight or underweight. For heights, we see a similar pattern.
+
+
+
+## Performance Post-Injury grouped by Injury Level
+```{r}
+ggplot(nba, aes(performance)) +
+  geom_bar(fill = 'light blue') +
+  facet_wrap(~ inj_level)
+```
+
+We see steady progression of the underperformed individuals in comparison to other players in their respective levels.
+In Levels 1 and 4, we can compare the three categories of performance in proportion to each level; We see a dropoff in the proportion of overperformed players and an increase in the proportion of underperformed players while higher on the injury level scale.
+I didn't expect Injury Level 3 to have many equal performances pre- and post-injury, but this makes sense as Level 3 players with average height and weight have a large proportion of the players (from our plots down below). The reason why we don't see this in Injury Level 4 is because of the severity plays a larger factor than in level 3.
+
+
+## Performance & Weight Classification - Split by Injury Level
+```{r}
+ggplot(nba, aes(performance)) +
+  geom_bar(aes(fill = weight_class)) +
+  facet_wrap(~ inj_level)
+```
+
+
+```{r}
+ggplot(nba, aes(performance)) +
+  geom_bar(aes(fill = height_class)) +
+  facet_wrap(~ inj_level)
+```
+
+Now we can see in Injury Level 2 that there are more average weight and height players (to their positions) than non-average weight and height players which confirms our belief in our previous graph of performance by injury level: Our equally performing players in level 2 are mostly due to the fact that we have these players' physiques tailored more to their position, which means they were able to heal properly in preparation for their return from injury.
+Another great thing that I expected is the average weight and height players who underperformed have a smaller proportion to overaverage and underaverage height and weight players as we get higher on the injury level scale.
+
+
+## Performance by Position and Injury Level Classification
+```{r}
+ggplot(nba, aes(performance)) +
+  geom_bar(aes(fill = position)) +
+  facet_wrap(~ inj_level)
+```
+
+Initially, it's interesting to see that a random spread in terms of positions and performances post injury, but it makes sense as it is a small sample size of 150 random players.
+
+
+
+# Splitting our Data & Setting Up Models
+Here, we wil be splitting our dataset into a training set and testing set. Our response variable is `gs_postinj`. With a 80/20 split, let's get started:
+```{r}
+nba_split <- nba %>%
+  initial_split(propr = 0.8, strata = "gs_postinj")
+
+nba_train <- training(nba_split)
+nba_test <- testing(nba_split)
+```
+
+```{r}
+dim(nba_train)
+dim(nba_test)
+```
+We have 110 observations in our training set, and 40 observations in our testing set.
+
+## Recipe Building
+
+Now, let's build our recipe to predict game score post-injury or `gs_postinj`. We are using 23 predictors to determine this - by using all pre-injury single statistics that make up GS as well as age and other physical attributes.
+```{r}
+nba_recipe <-
+  recipe(gs_postinj ~ position + age + inj_level + time_recovered + weight + weight_class + height + height_class + prior_inj_count + mpg_preinj + FG_preinj + FGA_preinj + FT_preinj + FTA_preinj + ORB_preinj + DRB_preinj + AST_preinj + BLK_preinj +TOV_preinj + PF_preinj + points_preinj + gs_preinj + mpg_postinj, data = nba_train) %>%
+  step_dummy(position) %>%
+  step_ordinalscore(inj_level) %>%
+  step_ordinalscore(weight_class) %>%
+  step_ordinalscore(height_class) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+
+# nba_recipe %>% prep() %>% juice()
+```
+
+
+## k-fold Cross Validation
+We will be using stratified cross validation while stratifying on the response variable `gs_postinj` and with `v=10` folds:
+```{r, eval = FALSE}
+nba_folds <-
+  vfold_cv(nba_train, v=10, strata = gs_postinj)
+
+save(nba_folds, file = "nba_folds.rda")
+```
+
+
+```{r}
+load(file = "nba_folds.rda")
+```
+
+
+# Modeling
+In consultation with Dr. Coburn and other instructional members, I decided to run cross fold validation on five models:
+
+  1. Linear Regression  
+  2. Random Forest  
+  3. Boosted Trees  
+  4. K Nearest Neighbor  
+  5. Elastic Net  
+
+
+Our process will be like so:
+
+  1. Building Model  
+  2. Running Model  
+  3. Analysis of Model Performance  
+
+Let's get started!
+
+## 1. Linear Regression
+Linear regression is simple, as we do not need a grid for tuning. Using `linear_reg()` and setting our engine to a linear model, we can produce our model. We also need to produce a workflow that incorporates our `nba_recipe` recipe and fit it.
+```{r}
+lm_model <- linear_reg() %>%
+  set_engine("lm")
+
+lm_workflow <- workflow() %>%
+  add_recipe(nba_recipe) %>%
+  add_model(lm_model)
+
+lm_fit <- fit(lm_workflow, nba_train)
+```
+
+
+### Executing our Linear Regression Model Performance
+For the purpose of this project and to assess our model performance, we took a look at the R^2 value for each model as it was an easy way to assess the amount variance that the model accounted for. 
+Let's now take a look at how our linear model did:
+```{r}
+lm_metric <- metric_set(rsq)
+lm_predict <- predict(lm_fit, nba_train) %>%
+  bind_cols(nba_train %>% select(gs_postinj))
+lm_metric(lm_predict, truth = gs_postinj, estimate =.pred)
+```
+We can see that linear regression produces an R^2 value of approximately 0.797. This was particularly surprising given that our training set has many predictors and the question of interest is generally hard to accurately answer.
+
+
+
+
+## 2. Random Forest
+For Random Forest, we need to utilize the `ranger` engine, while tuning `min_n` and `mtry` and setting our mode to `regression`. Then, our incorporated `nba_recipe` is stored into the workflow:
+```{r}
+rf_model <- rand_forest(
+    min_n = tune(),
+    mtry = tune(),
+    mode = "regression") %>%
+  set_engine("ranger")
+
+rf_workflow <- workflow() %>%
+  add_model(rf_model) %>%
+  add_recipe(nba_recipe)
+```
+
+
+### Setting up our Grid
+Next, I set up a tuning grid (we will use this for our next four models) and updated the necessary parameters. The grid was set up with 8 levels (smaller dataset and faster computing times with higher levels). We additionally have `mtry` equalling 23 for the number of predictors and `min_n` having a maximum of 5 (regression tends to work best with 5, while classification tends to work best with 10).
+```{r}
+rf_grid <- grid_regular(mtry(range = c(1,23)), min_n(range=c(1,5)), levels = 8)
+```
+
+### Executing the Random Forest Model Performance
+By tuning and fitting, we can process our results. This process took the longest out of all models.
+```{r, eval = FALSE}
+rf_tune <- rf_workflow %>%
+  tune_grid(
+    resamples = nba_folds,
+    grid = rf_grid,
+    metrics = metric_set(rsq)
+  )
+
+save(rf_tune, rf_workflow, file = "rf_tune.rda")
+```
+
+
+```{r}
+load(file = "rf_tune.rda")
+```
+
+### Random Forest Plot
+Let's take a quick look using the `autoplot()` function:
+```{r}
+autoplot(rf_tune, metric = "rsq")
+```
+```{r}
+show_best(rf_tune, metric = "rsq") %>%
+  select(-.estimator, -.config)
+```
+We can see that with `mtry` = 19 and `min_n` = 5, our best Random Forest model produced an R^2 value of approximately 0.761, which is 0.36 less than our linear regression model.
+
+
+
+## 3. Boosted Tree Model
+Like our Random Forest Model, we similarly have to tune `mtry` and `min_n`, while setting our mode to `regression`. The engine we will be utilizing for Boosted Trees is `xgboost`. Then, our incorporated `nba_recipe` is stored into the workflow:
+```{r}
+bt_model <- boost_tree(
+    mode = "regression",
+    min_n = tune(),
+    mtry = tune()) %>%
+  set_engine("xgboost")
+
+bt_workflow <- workflow() %>%
+  add_model(bt_model) %>%
+  add_recipe(nba_recipe)
+```
+
+
+### Setting up our Grid
+Our tuning grid has the same parameters as our Random Forest model, due to similar reasoning:
+```{r}
+bt_grid <- grid_regular(mtry(range = c(1,23)), min_n(range=c(1,5)), levels = 8)
+```
+
+### Executing the Boosted Tree Model
+By tuning and fitting, we can process our results for our boosted tree model. This process took the second most time to execute:
+```{r, eval = FALSE}
+bt_tune <- bt_workflow %>%
+  tune_grid(
+    resamples = nba_folds,
+    grid = bt_grid,
+    metrics = metric_set(rsq)
+  )
+
+save(bt_tune, bt_workflow, file = "bt_tune.rda")
+```
+
+```{r}
+load(file = "bt_tune.rda")
+```
+
+### Boosted Tree Plot
+Let's take a quick look using the `autoplot()` function:
+```{r}
+autoplot(bt_tune, metric = "rsq")
+```
+
+
+
+```{r}
+show_best(bt_tune, metric = "rsq") %>%
+  select(-.estimator, -.config)
+```
+We can see that with `mtry` = 23 and `min_n` = 5, our best Boosted Tree model had an R^2 value of 0.752, which is approximately 0.1 less than our Random Forest model, which means our Boosted Tree did not beat the linear regression model. 
+
+
+## 4. K Nearest Neighbors
+For our Nearest Neighbor model, we run repeated cross fold validation again, while only tuning `neighbors` as the defaults are compatible for our model. Once again, I incorporated our `nba_recipe` to our workflow:
+```{r}
+knn_model <-
+  nearest_neighbor(
+    neighbors = tune(),
+    mode = "regression") %>%
+  set_engine("kknn")
+
+knn_workflow <- workflow() %>%
+  add_model(knn_model) %>%
+  add_recipe(nba_recipe)
+```
+
+
+### Setting up our Grid
+Then, set up a tuning grid for our model:
+```{r, warning = FALSE}
+knn_params <- parameters(knn_model)
+knn_grid <- grid_regular(knn_params, levels = 8)
+```
+
+### Executing our KNN model
+By tuning and fitting the cross fold validation, our Nearest Neighbors model is ready to be assessed:
+```{r, eval = FALSE}
+knn_tune <- knn_workflow %>%
+  tune_grid(
+    resamples = nba_folds,
+    grid = knn_grid
+  )
+
+save(knn_tune, knn_workflow, file = "knn_tune.rda")
+```
+
+```{r}
+load(file = "knn_tune.rda")
+```
+
+### KNN Plot
+Let's take a quick look using the `autoplot()` function:
+```{r}
+autoplot(knn_tune, metric ="rsq")
+```
+
+We can see that our number of `neighbors` is 15, but let's take a look by showing our best KNN model.
+
+
+```{r}
+show_best(knn_tune, metric = "rsq") %>%
+  select(-.estimator, -.config)
+```
+We can confirm here that our number of `neighbors` is 15. Our R^2 value for our best KNN model is approximately 0.618. This does not beat any of our previous models.
+
+
+
+
+
+## 5. Elastic Net (recommended by professor)
+Lastly, the Elastic Net model was a recommendation by Dr. Coburn, in order to take a look at the comparison via my linear regression model. I set up the model by tuning `penalty` and `mixture` and integrated our recipe into the workflow:
+```{r}
+elastic_net_model <- linear_reg(penalty = tune(),
+                                mixture = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+en_workflow <- workflow() %>%
+  add_recipe(nba_recipe) %>%
+  add_model(elastic_net_model)
+```
+
+
+### Setting up our Grid
+Next, our tuning grid needed to be set up. The parameter ranges I used were similar to the ones we used in previous homeworks and labs.
+```{r}
+en_grid <- grid_regular(penalty(range = c(-5, 5)),
+                        mixture(range = c(0,1)),
+                        levels = 8)
+```
+
+### Executing the Elastic Net model
+After tuning and fitting, we can take a look at how our Elastic Net model did.
+```{r, message=FALSE, eval = FALSE}
+en_tune <- tune_grid(
+  en_workflow,
+  resamples = nba_folds,
+  grid = en_grid
+)
+save(en_tune, en_workflow, file = "en_tune.rda")
+```
+
+
+```{r}
+load(file = "en_tune.rda")
+```
+
+### Elastic Net Plot
+Let's take a quick look using the `autoplot()` function:
+```{r}
+autoplot(en_tune, metric = "rsq")
+```
+
+```{r}
+show_best(en_tune, metric = "rsq") %>%
+  select(-.estimator, -.config)
+```
+Our best performing Elastic Net model had a R^2 value of approximately 0.745 with `penalty` = 5.1794747 and `mixture` = 0.5714286. This performed better than our KNN model but not the rest of our models.
+
+Therefore, let's continue with our linear regression model, which performed the best!
+
+
+# Final Model Building
+Here, we will be fitting our model to the testing data set and see how it does!
+
+```{r}
+lm_fit_train <- fit(lm_workflow, nba_train)
+```
+
+```{r}
+nba_metric <- metric_set(rsq)
+nba_predict <- predict(lm_fit_train, nba_test) %>%
+  bind_cols(nba_test %>% select(gs_postinj))
+nba_metric(nba_predict, truth = gs_postinj, estimate = .pred)
+```
+Our R^2 value for our testing set (0.818) is fairly close to our R^2 value on our training set (0.797), which is great in terms of not overfitting!
+
+At first, I expected our Random Forest model to perform the best and was surprised to see linear regression was our best performing model for our set. However, after consultation with Dr. Coburn and some analysis on the assumptions of linear regression, it made more sense to me. Because many of my predictors are greatly positively correlated as well as the differences in observations and predicted values being unbiased, linear regression works best as the strength of the relationships between variables is high. Some assumptions of linear regression that work best with my dataset are that my observations are independent of each other and there is no perfect exact relationship among variables - indicating no perfect multicollinearity.
+
+
+# Conclusion
+
+After researching and analyzing, the best model to predict game score post-injury is linear regression, though not perfect. 
+
+Although my model performed better than expected, I think a way of ultimately increasing model performing of predicting game score post-injury is to predict each single game score average individually. That way, we can conduct the Hollinger game score formula to get a more accurate game score. Another improvement I would like to make is the assessment of the injury text, possibly parsing to accurately determine which level the injury belongs to. Ultimately, our `performance` variable is conducted using a comparison of `gs_per36_postinj` which is a simple to calculation then finding the two values' difference, so that is something that I would use to conclude my prediction of the observed injured player.
+
+Ultimately, this project and course has widened my eyes to the world of machine learning and I am excited to use this newfound knowledge to use in future projects, including the improvement of this current one and other sports analysis related topics. 
